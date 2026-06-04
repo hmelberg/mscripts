@@ -1,23 +1,17 @@
-// Velkommen!
-// Dette er en side der du kan øve på å kjøre analyser i microdata.no.
+// Eksempel 1: Beskrivende statistikk
+// Opprett datasett, importer variabler og se nøkkeltall med summarize.
 
-//- Denne siden inneholder ikke ekte tall, det er et hobbyprosjekt og er ikke laget av microdata.no selv. Den kommer også uten garantier for at analysene er korrekt implementert.
+require no.ssb.fdb:54 as fd
+create-dataset beskrivelse
+import fd/BEFOLKNING_KJOENN as kjonn
+import fd/INNTEKT_WLONN 2022-01-01 as inntekt
+import fd/BOSATTEFDT_BOSTED 2022-12-31 as kommune
 
-// La oss starte med et eksempel
-//- Du kan endre det fritt eller hente et nytt under eksempler i menyen.
+summarize inntekt
 
-// Først må vi koble oss opp mot basen med data
-require no.ssb.fdb:51 as db  // Her lager vi koblingen og gir den et navn (db).
+tabulate kjonn
 
-create-dataset df  // Vi starter så med å opprette et nytt datasett kalt df
+summarize inntekt, gini iqr
+summarize inntekt if kjonn == "1", gini
 
-// Vi kan så importere ulike variabler
-import db/BEFOLKNING_KJOENN as kjonn
-import db/INNTEKT_LONN 2022-12-31 as inntekt  // Akkumulerte variabler krever en importdato (YYYY-MM-DD)
-// Nå har vi hentet data fra databasen (db) og gitt variablene nye navn.
-// Husk at du kan trykke TAB for å få hjelp med kommandoer og variabler
-
-// Da er vi klare til å analysere.
-summarize inntekt // Kommandoen vises gjennomsnitt, standardavvik og mer
-tabulate kjonn    // Tabellen viser fordelingen mellom kjønnene i datasettet
-barchart kjonn    // Til slutt lager vi et stolpediagram over kjønnsfordelingen
+tabulate kommune, summarize(inntekt) mean rowsort()
