@@ -1,0 +1,111 @@
+require no.ssb.fdb:53 as db
+
+// ─────────────────────────────────────────────────────────────
+// STEG 1: Identifiser voksne barn (18–45 år) i 2015
+//         og hent grunnleggende kjennetegn
+// ─────────────────────────────────────────────────────────────
+create-dataset barn
+import db/BEFOLKNING_KJOENN as kjonn
+import db/BEFOLKNING_FOEDSELS_AAR_MND as faarmnd
+import db/BEFOLKNING_MOR_FNR as fnr_mor
+import db/BEFOLKNING_FAR_FNR as fnr_far
+
+// Behold voksne barn (18–45 år i 2015)
+generate fodselsaar = int(faarmnd / 100)
+generate alder2015 = 2015 - fodselsaar
+keep if alder2015 >= 18 & alder2015 <= 45
+
+// Utdanningsnivå (forløp – verdi ved 2015)
+import db/NUDB_BU 2015-10-01 as utdnivaa
+destring utdnivaa
+// NUS 2000: første siffer = nivå (3=videregående, 6=bachelor, 7/8=master/phd)
+generate utdgruppe = 1                      // grunnskole
+replace utdgruppe = 2 if utdnivaa >= 300000 & utdnivaa < 600000   // vgs
+replace utdgruppe = 3 if utdnivaa >= 600000 & utdnivaa < 700000   // bachelor
+replace utdgruppe = 4 if utdnivaa >= 700000                        // master+
+
+// ─────────────────────────────────────────────────────────────
+// STEG 2: Identifiser enslige foreldre
+//         Familietype via mor – vi bruker mor som forelder-proxy
+//         (enslig = husholdning med bare én voksen)
+// ─────────────────────────────────────────────────────────────
+
+// Hent mors familiesituasjon i 2015
+create-dataset mordata_fam
+import db/BEFOLKNING_REGSTAT_FAMTYP 2015-01-01 as famtyp_mor
+import db/BEFOLKNING_KJOENN as kjonn_mor   // kun for å hente mor-populasjonen
+
+// Familietyper med enslig forsørger: koder som starter med "3." eller "4."
+// 3.x = enslig mor med barn, 4.x = enslig far med barn (SSB-standard)
+generate enslig_forelder = 0
+replace enslig_forelder = 1 if startswith(famtyp_mor, '3')
+replace enslig_forelder = 1 if startswith(famtyp_mor, '4')
+
+// Merge enslig-status inn i barndatasettet via fnr_mor (mor er ref.)
+merge enslig_forelder into barn on fnr_mor
+use barn
+keep if enslig_forelder == 1    // hold kun barn av enslige foreldre
+
+// ─────────────────────────────────────────────────────────────
+// STEG 3: Hent forelderens inntekt FØR behandlingsperioden (2014)
+//         som kontrollvariabel og bakgrunnskarakteristikk
+// ─────────────────────────────────────────────────────────────
+create-dataset mordata_inn
+import db/INNTEKT_WLONN 2014-12-31 as lonn_mor_pre
+
+merge lonn_mor_pre into barn on fnr_mor
+use barn
+replace lonn_mor_pre = 0 if sysmiss(lonn_mor_pre)   // ingen lønnsinntekt = 0
+
+// ─────────────────────────────────────────────────────────────
+// STEG 4: Hent forelderens uførestatus (behandlingsvariabel)
+//         Uføretrygd 2016 = "ble ufør i/rundt behandlingsår"
+//         Vi bruker 2016 som "behandlingsår" og 2018 som post-periode
+// ─────────────────────────────────────────────────────────────
+create-dataset mordata_uf
+import db/UFOERP2011FDT_MOTTAK 2016-01-01 as ufor_mor
+
+// ufor_mor = '1' betyr aktiv mottaker (behandlingsgruppe)
+generate behandling = 0
+replace behandling = 1 if ufor_mor == '1'
+
+merge behandling into barn on fnr_mor
+use barn
+replace behandling = 0 if sysmiss(behandling)
+
+// ─────────────────────────────────────────────────────────────
+// STEG 5: Hent barnets lønn FØR (2014) og ETTER (2018)
+// ─────────────────────────────────────────────────────────────
+import db/INNTEKT_WLONN 2014-12-31 as lonn2014
+import db/INNTEKT_WLONN 2018-12-31 as lonn2018
+
+replace lonn2014  = 0 if sysmiss(lonn2014)
+replace lonn2018 = 0 if sysmiss(lonn2018)
+
+// ─────────────────────────────────────────────────────────────
+// STEG 6: Bygg paneldatasett (wide → long) for DiD
+// ─────────────────────────────────────────────────────────────
+// Vi reshape til long: én rad per (barn, periode)
+// periode = 0 (pre=2014), periode = 1 (post=2018)
+reshape-to-panel lonn
+
+// Nå har vi panel@date-kolonnen og lonn som avhengig variabel.
+// Lag behandlings-dummyer for DiD
+generate post = 0
+replace post = 1 if panel@date == 2018
+
+generate did = behandling * post   // interaksjonsledd
+
+// ─────────────────────────────────────────────────────────────
+// STEG 7: DiD-regresjon
+// Avhengig variabel:   lonn (barnets lønn)
+// Gruppe:              behandling (mor ble ufør i 2016)
+// Periode:             post (2018 vs 2014)
+// Interaksjon (ATET):  did
+// Kontroller:          kjonn, utdgruppe, alder2015, lonn_mor_pre
+// ─────────────────────────────────────────────────────────────
+summarize lonn
+tabulate behandling
+tabulate post
+
+regress-panel lonn behandling post did i.kjonn i.utdgruppe alder2015 lonn_mor_pre, pooled robust
